@@ -8,7 +8,7 @@ app.use(express.json());
 
 // Root endpoint
 app.get('/', (req, res) => {
-  res.json({ message: 'BlahBluh Backend API is running!' });
+  res.json({ message: 'BlahBluh Backend API is running bitch!' });
 });
 
 // Hello World API endpoint
