@@ -1,11 +1,11 @@
 const API_BASE_URL = 'https://blahbluh.onrender.com';
 
 export const api = {
-  async generateUserId() {
-    console.log('🆔 Generating random user ID...');
-    const response = await fetch(`${API_BASE_URL}/api/generate-user-id`);
+  async generateUser() {
+    console.log('🆔 Generating random user...');
+    const response = await fetch(`${API_BASE_URL}/api/generate-user`);
     const data = await response.json();
-    console.log('✅ Generated user ID:', data.userId);
+    console.log('✅ Generated user:', data);
     return data;
   },
 

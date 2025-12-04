@@ -2,14 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 import { api } from './api';
 
-function ChatPage({ user }) {
+function ChatPage() {
   const [inQueue, setInQueue] = useState(false);
   const [queuePosition, setQueuePosition] = useState(0);
   const [chatId, setChatId] = useState(null);
   const [chatPartner, setChatPartner] = useState(null);
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
-  const [currentUserId, setCurrentUserId] = useState(null);
+  const [currentUser, setCurrentUser] = useState(null);
   const socketRef = useRef(null);
 
   useEffect(() => {
@@ -22,14 +22,16 @@ function ChatPage({ user }) {
     
     socketRef.current.on('chat-paired', (data) => {
       console.log('👥 Chat pairing received:', data);
-      const partner = data.users.find(u => u.userId !== currentUserId);
-      if (data.users.some(u => u.userId === currentUserId)) {
-        console.log('✅ User matched! Partner:', partner);
-        setChatId(data.chatId);
-        setChatPartner(partner);
-        setInQueue(false);
-        console.log('🏠 Joining chat room:', data.chatId);
-        socketRef.current.emit('join-chat', { userId: currentUserId, chatId: data.chatId });
+      if (currentUser) {
+        const partner = data.users.find(u => u.userId !== currentUser.userId);
+        if (data.users.some(u => u.userId === currentUser.userId)) {
+          console.log('✅ User matched! Partner:', partner);
+          setChatId(data.chatId);
+          setChatPartner(partner);
+          setInQueue(false);
+          console.log('🏠 Joining chat room:', data.chatId);
+          socketRef.current.emit('join-chat', { userId: currentUser.userId, chatId: data.chatId });
+        }
       }
     });
 
@@ -42,17 +44,24 @@ function ChatPage({ user }) {
       console.log('🔌 Disconnecting from server...');
       socketRef.current?.disconnect();
     };
-  }, [currentUserId]);
+  }, [currentUser]);
 
   const joinQueue = async () => {
     try {
       console.log('🔄 Attempting to join queue...');
-      const response = await api.joinQueue(currentUserId, user.displayName);
+      let user = currentUser;
+      
+      if (!user) {
+        console.log('🆔 No current user, generating new one...');
+        user = await api.generateUser();
+        setCurrentUser(user);
+      }
+      
+      const response = await api.joinQueue(user.userId, user.username);
       console.log('📝 Join queue response:', response);
       
-      if (response.userId) {
-        setCurrentUserId(response.userId);
-        console.log('🆔 Using userId:', response.userId);
+      if (response.userId && response.username) {
+        setCurrentUser({ userId: response.userId, username: response.username });
       }
       
       setInQueue(true);
@@ -64,11 +73,13 @@ function ChatPage({ user }) {
 
   const leaveQueue = async () => {
     try {
-      console.log('🚪 Leaving queue for userId:', currentUserId);
-      await api.leaveQueue(currentUserId);
-      setInQueue(false);
-      setQueuePosition(0);
-      console.log('✅ Successfully left queue');
+      console.log('🚪 Leaving queue for userId:', currentUser?.userId);
+      if (currentUser) {
+        await api.leaveQueue(currentUser.userId);
+        setInQueue(false);
+        setQueuePosition(0);
+        console.log('✅ Successfully left queue');
+      }
     } catch (error) {
       console.error('❌ Error leaving queue:', error);
     }
@@ -78,14 +89,16 @@ function ChatPage({ user }) {
     console.log('📊 Starting queue status polling...');
     const interval = setInterval(async () => {
       try {
-        const status = await api.getQueueStatus(currentUserId);
-        console.log('📊 Queue status:', status);
-        if (!status.inQueue) {
-          clearInterval(interval);
-          setInQueue(false);
-          console.log('⏹️ Stopped polling - user no longer in queue');
-        } else {
-          setQueuePosition(status.queuePosition);
+        if (currentUser) {
+          const status = await api.getQueueStatus(currentUser.userId);
+          console.log('📊 Queue status:', status);
+          if (!status.inQueue) {
+            clearInterval(interval);
+            setInQueue(false);
+            console.log('⏹️ Stopped polling - user no longer in queue');
+          } else {
+            setQueuePosition(status.queuePosition);
+          }
         }
       } catch (error) {
         console.error('❌ Error polling queue status:', error);
@@ -95,13 +108,13 @@ function ChatPage({ user }) {
   };
 
   const sendMessage = () => {
-    if (newMessage.trim() && chatId) {
+    if (newMessage.trim() && chatId && currentUser) {
       console.log('📤 Sending message:', newMessage, 'to chat:', chatId);
       socketRef.current.emit('send-message', {
         chatId,
         message: newMessage,
-        userId: currentUserId,
-        username: user.displayName
+        userId: currentUser.userId,
+        username: currentUser.username
       });
       setNewMessage('');
     }
@@ -112,7 +125,7 @@ function ChatPage({ user }) {
     setChatId(null);
     setChatPartner(null);
     setMessages([]);
-    setCurrentUserId(null);
+    setCurrentUser(null);
   };
 
   if (chatId && chatPartner) {
@@ -133,9 +146,9 @@ function ChatPage({ user }) {
         <div className="flex flex-col h-[calc(100vh-80px)]">
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
             {messages.map((msg) => (
-              <div key={msg.id} className={`flex ${msg.userId === currentUserId ? 'justify-end' : 'justify-start'}`}>
+              <div key={msg.id} className={`flex ${msg.userId === currentUser?.userId ? 'justify-end' : 'justify-start'}`}>
                 <div className={`max-w-xs px-4 py-2 rounded-lg ${
-                  msg.userId === currentUserId 
+                  msg.userId === currentUser?.userId 
                     ? 'bg-purple-600 text-white' 
                     : 'bg-gray-700 text-white'
                 }`}>
@@ -173,8 +186,10 @@ function ChatPage({ user }) {
     <div className="min-h-screen bg-gray-900 text-white">
       <div className="bg-gray-800 border-b border-gray-700 px-6 py-4">
         <div className="flex justify-between items-center">
-          <h1 className="text-xl font-semibold">Random Chat</h1>
-          <span className="text-sm">{user.displayName} {currentUserId && `(${currentUserId.slice(0,8)}...)`}</span>
+          <h1 className="text-xl font-semibold">BlahBluh Random Chat</h1>
+          {currentUser && (
+            <span className="text-sm">You are: {currentUser.username}</span>
+          )}
         </div>
       </div>
 
@@ -189,6 +204,7 @@ function ChatPage({ user }) {
           {inQueue ? (
             <div>
               <h3 className="text-2xl font-semibold mb-2">Finding a chat partner...</h3>
+              <p className="text-gray-400 mb-2">You are: {currentUser?.username}</p>
               <p className="text-gray-400 mb-6">Position in queue: {queuePosition}</p>
               <button 
                 onClick={leaveQueue}
@@ -200,7 +216,7 @@ function ChatPage({ user }) {
           ) : (
             <div>
               <h3 className="text-2xl font-semibold mb-2">Ready to chat?</h3>
-              <p className="text-gray-400 mb-6">Get paired with a random person for a chat</p>
+              <p className="text-gray-400 mb-6">Get paired with a random person for anonymous chat</p>
               <button 
                 onClick={joinQueue}
                 className="px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 rounded-lg font-medium"
