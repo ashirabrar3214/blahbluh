@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import io from 'socket.io-client';
 import { api } from './api';
 
@@ -12,6 +12,29 @@ function ChatPage() {
   const [currentUser, setCurrentUser] = useState(null);
   const [isJoiningQueue, setIsJoiningQueue] = useState(false);
   const socketRef = useRef(null);
+
+  const pollQueueStatus = useCallback(() => {
+    console.log('📊 Starting queue status polling...');
+    const interval = setInterval(async () => {
+      try {
+        if (currentUser) {
+          const status = await api.getQueueStatus(currentUser.userId);
+          console.log('📊 Queue status:', status);
+          if (!status.inQueue) {
+            clearInterval(interval);
+            setInQueue(false);
+            setIsJoiningQueue(false);
+            console.log('⏹️ Stopped polling - user no longer in queue');
+          } else {
+            setQueuePosition(status.queuePosition);
+          }
+        }
+      } catch (error) {
+        console.error('❌ Error polling queue status:', error);
+        clearInterval(interval);
+      }
+    }, 2000);
+  }, [currentUser]);
 
   useEffect(() => {
     console.log('🔌 Connecting to socket server...');
@@ -36,6 +59,7 @@ function ChatPage() {
           setChatPartner(partner);
           setInQueue(false);
           setIsJoiningQueue(false);
+          setMessages([]); // Clear previous messages
           console.log('🏠 Joining chat room:', data.chatId);
           socketRef.current.emit('join-chat', { userId: currentUser.userId, chatId: data.chatId });
         }
@@ -47,11 +71,23 @@ function ChatPage() {
       setMessages(prev => [...prev, messageData]);
     });
 
+    socketRef.current.on('partner-left', (data) => {
+      console.log('👋 Partner left notification received:', data);
+      if (chatId === data.chatId) {
+        console.log('🔄 Returning to queue after partner left');
+        setChatId(null);
+        setChatPartner(null);
+        setMessages([]);
+        setInQueue(true);
+        pollQueueStatus();
+      }
+    });
+
     return () => {
       console.log('🔌 Disconnecting from server...');
       socketRef.current?.disconnect();
     };
-  }, [currentUser]);
+  }, [currentUser, chatId, pollQueueStatus]);
 
   const joinQueue = async () => {
     if (isJoiningQueue) {
@@ -105,29 +141,6 @@ function ChatPage() {
     } catch (error) {
       console.error('❌ Error leaving queue:', error);
     }
-  };
-
-  const pollQueueStatus = () => {
-    console.log('📊 Starting queue status polling...');
-    const interval = setInterval(async () => {
-      try {
-        if (currentUser) {
-          const status = await api.getQueueStatus(currentUser.userId);
-          console.log('📊 Queue status:', status);
-          if (!status.inQueue) {
-            clearInterval(interval);
-            setInQueue(false);
-            setIsJoiningQueue(false);
-            console.log('⏹️ Stopped polling - user no longer in queue');
-          } else {
-            setQueuePosition(status.queuePosition);
-          }
-        }
-      } catch (error) {
-        console.error('❌ Error polling queue status:', error);
-        clearInterval(interval);
-      }
-    }, 2000);
   };
 
   const sendMessage = () => {
