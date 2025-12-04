@@ -18,6 +18,11 @@ function ChatPage() {
     
     socketRef.current.on('connect', () => {
       console.log('✅ Connected to server with socket ID:', socketRef.current.id);
+      // Register user with socket if we have one
+      if (currentUser) {
+        console.log('📝 Registering user with socket:', currentUser.userId);
+        socketRef.current.emit('register-user', { userId: currentUser.userId });
+      }
     });
     
     socketRef.current.on('chat-paired', (data) => {
@@ -61,7 +66,14 @@ function ChatPage() {
       console.log('📝 Join queue response:', response);
       
       if (response.userId && response.username) {
-        setCurrentUser({ userId: response.userId, username: response.username });
+        const updatedUser = { userId: response.userId, username: response.username };
+        setCurrentUser(updatedUser);
+        
+        // Register user with socket
+        if (socketRef.current && socketRef.current.connected) {
+          console.log('📝 Registering user with socket after queue join:', updatedUser.userId);
+          socketRef.current.emit('register-user', { userId: updatedUser.userId });
+        }
       }
       
       setInQueue(true);
