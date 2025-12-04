@@ -23,6 +23,16 @@ let waitingUsers = [];
 let activeChats = new Map();
 let users = new Map();
 
+// Random name generation
+const adjectives = ['Shearing', 'Colliding', 'Dancing', 'Flying', 'Jumping', 'Spinning', 'Glowing', 'Bouncing', 'Sliding', 'Rolling', 'Floating', 'Zooming', 'Giggling', 'Sparkling', 'Wobbling', 'Drifting', 'Blazing', 'Twinkling', 'Rushing', 'Swirling'];
+const nouns = ['Chicken', 'Banana', 'Penguin', 'Unicorn', 'Dragon', 'Butterfly', 'Elephant', 'Pineapple', 'Octopus', 'Flamingo', 'Giraffe', 'Koala', 'Dolphin', 'Cactus', 'Rainbow', 'Tornado', 'Meteor', 'Galaxy', 'Phoenix', 'Wizard'];
+
+function generateRandomName() {
+  const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
+  const noun = nouns[Math.floor(Math.random() * nouns.length)];
+  return `${adjective} ${noun}`;
+}
+
 console.log('🚀 Server initializing...');
 
 // Root endpoint
@@ -37,34 +47,31 @@ app.get('/api/hello', (req, res) => {
   res.json({ message: 'Hello World!' });
 });
 
-// Generate random user ID
-app.get('/api/generate-user-id', (req, res) => {
+// Generate random user with name
+app.get('/api/generate-user', (req, res) => {
   const randomUserId = uuidv4();
-  console.log('🆔 Generated random user ID:', randomUserId);
-  res.json({ userId: randomUserId });
+  const randomUsername = generateRandomName();
+  console.log('🆔 Generated random user - ID:', randomUserId, 'Name:', randomUsername);
+  res.json({ userId: randomUserId, username: randomUsername });
 });
 
-// Join queue for random chat
+// Join queue for random chat (no login required)
 app.post('/api/join-queue', (req, res) => {
   console.log('🔄 Join queue request received:', req.body);
   
   let { userId, username } = req.body;
   
-  // Generate random userId if not provided
-  if (!userId) {
+  // Generate random user if not provided
+  if (!userId || !username) {
     userId = uuidv4();
-    console.log('🆔 Generated random userId for user:', userId);
-  }
-  
-  if (!username) {
-    console.log('❌ Username missing in join queue request');
-    return res.status(400).json({ error: 'username required' });
+    username = generateRandomName();
+    console.log('🆔 Generated random user for queue - ID:', userId, 'Name:', username);
   }
 
   // Check if user already in queue
   if (waitingUsers.find(u => u.userId === userId)) {
     console.log('⚠️ User already in queue:', userId);
-    return res.json({ message: 'Already in queue', inQueue: true, userId });
+    return res.json({ message: 'Already in queue', inQueue: true, userId, username });
   }
 
   const user = { userId, username, joinedAt: Date.now() };
@@ -79,7 +86,8 @@ app.post('/api/join-queue', (req, res) => {
     message: 'Added to queue', 
     inQueue: true, 
     queuePosition: waitingUsers.length,
-    userId 
+    userId,
+    username
   });
 });
 
