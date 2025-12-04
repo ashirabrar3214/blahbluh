@@ -10,6 +10,7 @@ function ChatPage() {
   const [messages, setMessages] = useState([]);
   const [newMessage, setNewMessage] = useState('');
   const [currentUser, setCurrentUser] = useState(null);
+  const [isJoiningQueue, setIsJoiningQueue] = useState(false);
   const socketRef = useRef(null);
 
   useEffect(() => {
@@ -34,6 +35,7 @@ function ChatPage() {
           setChatId(data.chatId);
           setChatPartner(partner);
           setInQueue(false);
+          setIsJoiningQueue(false);
           console.log('🏠 Joining chat room:', data.chatId);
           socketRef.current.emit('join-chat', { userId: currentUser.userId, chatId: data.chatId });
         }
@@ -52,7 +54,13 @@ function ChatPage() {
   }, [currentUser]);
 
   const joinQueue = async () => {
+    if (isJoiningQueue) {
+      console.log('⚠️ Already joining queue, ignoring duplicate request');
+      return;
+    }
+
     try {
+      setIsJoiningQueue(true);
       console.log('🔄 Attempting to join queue...');
       let user = currentUser;
       
@@ -80,6 +88,7 @@ function ChatPage() {
       pollQueueStatus();
     } catch (error) {
       console.error('❌ Error joining queue:', error);
+      setIsJoiningQueue(false);
     }
   };
 
@@ -90,6 +99,7 @@ function ChatPage() {
         await api.leaveQueue(currentUser.userId);
         setInQueue(false);
         setQueuePosition(0);
+        setIsJoiningQueue(false);
         console.log('✅ Successfully left queue');
       }
     } catch (error) {
@@ -107,6 +117,7 @@ function ChatPage() {
           if (!status.inQueue) {
             clearInterval(interval);
             setInQueue(false);
+            setIsJoiningQueue(false);
             console.log('⏹️ Stopped polling - user no longer in queue');
           } else {
             setQueuePosition(status.queuePosition);
@@ -138,6 +149,7 @@ function ChatPage() {
     setChatPartner(null);
     setMessages([]);
     setCurrentUser(null);
+    setIsJoiningQueue(false);
   };
 
   if (chatId && chatPartner) {
@@ -231,9 +243,14 @@ function ChatPage() {
               <p className="text-gray-400 mb-6">Get paired with a random person for anonymous chat</p>
               <button 
                 onClick={joinQueue}
-                className="px-6 py-3 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 rounded-lg font-medium"
+                disabled={isJoiningQueue}
+                className={`px-6 py-3 rounded-lg font-medium ${
+                  isJoiningQueue 
+                    ? 'bg-gray-600 cursor-not-allowed' 
+                    : 'bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600'
+                }`}
               >
-                Start Random Chat
+                {isJoiningQueue ? 'Joining...' : 'Start Random Chat'}
               </button>
             </div>
           )}
