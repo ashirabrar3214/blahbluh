@@ -125,6 +125,12 @@ app.get('/api/queue-status/:userId', (req, res) => {
 io.on('connection', (socket) => {
   console.log('🔌 User connected with socket ID:', socket.id);
 
+  socket.on('register-user', (data) => {
+    const { userId } = data;
+    console.log('📝 User registered with socket - UserId:', userId, 'SocketId:', socket.id);
+    socket.userId = userId;
+  });
+
   socket.on('join-chat', (data) => {
     const { userId, chatId } = data;
     console.log('🏠 User joining chat - UserId:', userId, 'ChatId:', chatId);
