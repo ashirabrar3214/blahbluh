@@ -43,17 +43,14 @@ function isUserOffline(userId) {
 
 // Continuous pairing function
 function tryPairUsers() {
-  // Remove offline users from queue first
-  waitingUsers = waitingUsers.filter(u => !isUserOffline(u.userId));
-  
   while (waitingUsers.length >= 2) {
     console.log('🔄 Continuous pairing started - Users in queue:', waitingUsers.length);
-    
+
     const user1 = waitingUsers.shift();
     const user2 = waitingUsers.shift();
-    
+
     console.log('👥 Pairing users:', user1.username, '(', user1.userId, ') with', user2.username, '(', user2.userId, ')');
-    
+
     const chatId = uuidv4();
     const chat = {
       id: chatId,
@@ -61,26 +58,25 @@ function tryPairUsers() {
       createdAt: Date.now(),
       messages: []
     };
-    
+
     activeChats.set(chatId, chat);
-    
-    // Store pairings for reconnection recovery
+
     const pairingData = { chatId, users: [user1, user2] };
     activePairings.set(user1.userId, pairingData);
     activePairings.set(user2.userId, pairingData);
-    
+
     console.log('💬 Created new chat room:', chatId);
     console.log('📊 Active chats count:', activeChats.size);
     console.log('🔗 Stored pairings for reconnection recovery');
-    
-    // Notify only the two paired users
+
     console.log('📢 Sending pairing notification to the two users only');
     emitToUser(user1.userId, 'chat-paired', pairingData);
     emitToUser(user2.userId, 'chat-paired', pairingData);
-    
+
     console.log('✅ Pairing completed - Remaining in queue:', waitingUsers.length);
   }
 }
+
 
 // Helper to emit to a specific user (all their sockets)
 function emitToUser(userId, event, payload) {
