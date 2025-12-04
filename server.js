@@ -22,6 +22,7 @@ app.use(express.json());
 let waitingUsers = [];
 let activeChats = new Map();
 let users = new Map();
+let activePairings = new Map(); // userId -> pairing data
 
 // Random name generation
 const adjectives = ['Shearing', 'Colliding', 'Dancing', 'Flying', 'Jumping', 'Spinning', 'Glowing', 'Bouncing', 'Sliding', 'Rolling', 'Floating', 'Zooming', 'Giggling', 'Sparkling', 'Wobbling', 'Drifting', 'Blazing', 'Twinkling', 'Rushing', 'Swirling'];
@@ -52,15 +53,19 @@ function tryPairUsers() {
     };
     
     activeChats.set(chatId, chat);
+    
+    // Store pairings for reconnection recovery
+    const pairingData = { chatId, users: [user1, user2] };
+    activePairings.set(user1.userId, pairingData);
+    activePairings.set(user2.userId, pairingData);
+    
     console.log('💬 Created new chat room:', chatId);
     console.log('📊 Active chats count:', activeChats.size);
+    console.log('🔗 Stored pairings for reconnection recovery');
     
     // Notify users they've been paired
     console.log('📢 Broadcasting pairing notification to all clients');
-    io.emit('chat-paired', {
-      chatId,
-      users: [user1, user2]
-    });
+    io.emit('chat-paired', pairingData);
     
     console.log('✅ Pairing completed - Remaining in queue:', waitingUsers.length);
   }
@@ -72,12 +77,6 @@ console.log('🚀 Server initializing...');
 app.get('/', (req, res) => {
   console.log('📍 Root endpoint accessed');
   res.json({ message: 'BlahBluh Backend API is running!' });
-});
-
-// Hello World API endpoint
-app.get('/api/hello', (req, res) => {
-  console.log('👋 Hello endpoint accessed');
-  res.json({ message: 'Hello World!' });
 });
 
 // Generate random user with name
@@ -99,6 +98,12 @@ app.post('/api/join-queue', (req, res) => {
     userId = uuidv4();
     username = generateRandomName();
     console.log('🆔 Generated random user for queue - ID:', userId, 'Name:', username);
+  }
+
+  // Check if user already has an active pairing
+  if (activePairings.has(userId)) {
+    console.log('🔗 User already paired, not adding to queue:', userId);
+    return res.json({ message: 'Already paired', inQueue: false, userId, username });
   }
 
   // Check if user already in queue
@@ -136,6 +141,12 @@ app.post('/api/leave-queue', (req, res) => {
   waitingUsers = waitingUsers.filter(u => u.userId !== userId);
   const afterLength = waitingUsers.length;
   
+  // Remove from active pairings if exists
+  if (activePairings.has(userId)) {
+    console.log('🗑️ Removing user from active pairings:', userId);
+    activePairings.delete(userId);
+  }
+  
   console.log('📊 Queue length before:', beforeLength, 'after:', afterLength);
   res.json({ message: 'Left queue', inQueue: false });
 });
@@ -165,6 +176,13 @@ io.on('connection', (socket) => {
     const { userId } = data;
     console.log('📝 User registered with socket - UserId:', userId, 'SocketId:', socket.id);
     socket.userId = userId;
+    
+    // Check if user has an active pairing and resend event
+    if (activePairings.has(userId)) {
+      const pairingData = activePairings.get(userId);
+      console.log('🔄 Resending pairing event to reconnected user:', userId);
+      socket.emit('chat-paired', pairingData);
+    }
   });
 
   socket.on('join-chat', (data) => {
@@ -196,10 +214,15 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('🔌 User disconnected - Socket ID:', socket.id);
     if (socket.userId) {
-      console.log('🚪 Removing user from queue - UserId:', socket.userId);
-      const beforeLength = waitingUsers.length;
-      waitingUsers = waitingUsers.filter(u => u.userId !== socket.userId);
-      console.log('📊 Queue length after disconnect - Before:', beforeLength, 'After:', waitingUsers.length);
+      // Only remove from queue if not paired
+      if (!activePairings.has(socket.userId)) {
+        console.log('🚪 Removing unpaired user from queue - UserId:', socket.userId);
+        const beforeLength = waitingUsers.length;
+        waitingUsers = waitingUsers.filter(u => u.userId !== socket.userId);
+        console.log('📊 Queue length after disconnect - Before:', beforeLength, 'After:', waitingUsers.length);
+      } else {
+        console.log('🔗 User is paired, keeping in active pairings:', socket.userId);
+      }
     }
   });
 });
