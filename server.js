@@ -243,6 +243,14 @@ io.on('connection', (socket) => {
     socket.join(chatId);
     socket.userId = userId;
     socket.chatId = chatId;
+    
+    // Ensure this socket is tracked for offline detection
+    if (!userSockets.has(userId)) {
+      userSockets.set(userId, new Set());
+    }
+    userSockets.get(userId).add(socket.id);
+    console.log('📊 User socket count after join-chat:', userSockets.get(userId).size);
+    
     console.log('✅ User successfully joined chat room:', chatId);
   });
 
