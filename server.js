@@ -78,11 +78,17 @@ function generateRandomName() {
   return `${adjective} ${noun}`;
 }
 
-// Check if user is truly offline (no active sockets)
 function isUserOffline(userId) {
   const sockets = userSockets.get(userId);
-  return !sockets || sockets.size === 0;
+
+  // If we've never seen this user in userSockets yet,
+  // treat them as "online/unknown" so they can still be paired.
+  if (!sockets) return false;
+
+  // Only offline if we KNOW them and they have zero sockets.
+  return sockets.size === 0;
 }
+
 
 // Helper to emit to a specific user (all their sockets)
 function emitToUser(userId, event, payload) {
