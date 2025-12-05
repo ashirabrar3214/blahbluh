@@ -1,3 +1,6 @@
+// New backend implementation for random chat pairing using Express + Socket.IO
+// This keeps the same REST endpoint names and socket event names
+
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
@@ -18,315 +21,305 @@ const PORT = process.env.PORT || 3002;
 app.use(cors());
 app.use(express.json());
 
-// In-memory storage
-let waitingUsers = []; // users waiting to be paired
-let activeChats = new Map(); // chatId -> { id, users, createdAt, messages }
-let users = new Map(); // userId -> { userId, username, joinedAt }
-let activePairings = new Map(); // userId -> { chatId, users }
-let userSockets = new Map(); // userId -> Set<socketId>
+// ==============================
+// In-memory state
+// ==============================
 
-// Random name generation
+// Users that are waiting to be paired: [{ userId, username, joinedAt }]
+let waitingUsers = [];
+
+// Active chats: chatId -> { id, users: [userId1, userId2], createdAt }
+const activeChats = new Map();
+
+// All known users (for queue re-add etc.): userId -> { userId, username }
+const users = new Map();
+
+// Pairings: userId -> { chatId, users: [userId1, userId2] }
+const activePairings = new Map();
+
+// Socket tracking: userId -> Set(socketId)
+const userSockets = new Map();
+
+// ==============================
+// Utility: random names
+// ==============================
+
 const adjectives = [
-  'Shearing',
-  'Colliding',
-  'Dancing',
-  'Flying',
-  'Jumping',
-  'Spinning',
-  'Glowing',
-  'Bouncing',
-  'Sliding',
-  'Rolling',
-  'Floating',
-  'Zooming',
-  'Giggling',
-  'Sparkling',
-  'Wobbling',
-  'Drifting',
-  'Blazing',
-  'Twinkling',
-  'Rushing',
-  'Swirling',
+  'Shearing', 'Colliding', 'Dancing', 'Flying', 'Jumping', 'Spinning',
+  'Glowing', 'Bouncing', 'Sliding', 'Rolling', 'Floating', 'Zooming',
+  'Giggling', 'Sparkling', 'Wobbling', 'Drifting', 'Blazing', 'Twinkling',
+  'Rushing', 'Swirling',
 ];
 
 const nouns = [
-  'Chicken',
-  'Banana',
-  'Penguin',
-  'Unicorn',
-  'Dragon',
-  'Butterfly',
-  'Elephant',
-  'Pineapple',
-  'Octopus',
-  'Flamingo',
-  'Giraffe',
-  'Koala',
-  'Dolphin',
-  'Cactus',
-  'Rainbow',
-  'Tornado',
-  'Meteor',
-  'Galaxy',
-  'Phoenix',
+  'Chicken', 'Banana', 'Penguin', 'Unicorn', 'Dragon', 'Butterfly',
+  'Elephant', 'Pineapple', 'Octopus', 'Flamingo', 'Giraffe', 'Koala',
+  'Dolphin', 'Cactus', 'Rainbow', 'Tornado', 'Meteor', 'Galaxy', 'Phoenix',
   'Wizard',
 ];
 
 function generateRandomName() {
-  const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
+  const adj = adjectives[Math.floor(Math.random() * adjectives.length)];
   const noun = nouns[Math.floor(Math.random() * nouns.length)];
-  return `${adjective} ${noun}`;
+  return `${adj} ${noun}`;
 }
+
+// ==============================
+// Utility: socket helpers
+// ==============================
 
 function isUserOffline(userId) {
   const sockets = userSockets.get(userId);
-
-  // If we've never seen this user in userSockets yet,
-  // treat them as "online/unknown" so they can still be paired.
-  if (!sockets) return false;
-
-  // Only offline if we KNOW them and they have zero sockets.
-  return sockets.size === 0;
+  return !sockets || sockets.size === 0;
 }
 
-
-// Helper to emit to a specific user (all their sockets)
 function emitToUser(userId, event, payload) {
   const sockets = userSockets.get(userId);
   if (!sockets) return;
-
   sockets.forEach((socketId) => {
     io.to(socketId).emit(event, payload);
   });
 }
 
-// Continuous pairing function
+// ==============================
+// Pairing logic
+// ==============================
+
+function randomInt(max) {
+  return Math.floor(Math.random() * max);
+}
+
+// Randomly pick and remove one user from waitingUsers
+function popRandomUser() {
+  if (waitingUsers.length === 0) return null;
+  const idx = randomInt(waitingUsers.length);
+  const [user] = waitingUsers.splice(idx, 1);
+  return user;
+}
+
+// Try to pair as many users as possible randomly
 function tryPairUsers() {
-  // 🔧 First, drop offline users from the queue so we never pair ghosts
-  const beforeCleanup = waitingUsers.length;
+  // Clean dead entries: keep only users that are currently online
+  const before = waitingUsers.length;
   waitingUsers = waitingUsers.filter((u) => !isUserOffline(u.userId));
-  const afterCleanup = waitingUsers.length;
-  if (beforeCleanup !== afterCleanup) {
-    console.log(
-      `🧹 Cleaned offline users from queue: before=${beforeCleanup} after=${afterCleanup}`
-    );
+  const after = waitingUsers.length;
+  if (before !== after) {
+    console.log(`🧹 Cleaned offline users from queue: before=${before} after=${after}`);
   }
 
   while (waitingUsers.length >= 2) {
-    console.log('🔄 Continuous pairing started - Users in queue:', waitingUsers.length);
+    console.log('🔄 Attempting random pairing; queue size =', waitingUsers.length);
 
-    const user1 = waitingUsers.shift();
-    const user2 = waitingUsers.shift();
+    const user1 = popRandomUser();
+    const user2 = popRandomUser();
+
+    if (!user1 || !user2) break;
 
     console.log(
       '👥 Pairing users:',
-      user1.username,
-      '(',
-      user1.userId,
-      ') with',
-      user2.username,
-      '(',
-      user2.userId,
-      ')'
+      `${user1.username} (${user1.userId}) with ${user2.username} (${user2.userId})`
     );
 
     const chatId = uuidv4();
     const chat = {
       id: chatId,
-      users: [user1, user2],
+      users: [user1.userId, user2.userId],
       createdAt: Date.now(),
-      messages: [],
     };
 
     activeChats.set(chatId, chat);
 
-    const pairingData = { chatId, users: [user1, user2] };
+    const pairingData = {
+      chatId,
+      users: [
+        { userId: user1.userId, username: user1.username },
+        { userId: user2.userId, username: user2.username },
+      ],
+    };
+
     activePairings.set(user1.userId, pairingData);
     activePairings.set(user2.userId, pairingData);
 
-    console.log('💬 Created new chat room:', chatId);
-    console.log('📊 Active chats count:', activeChats.size);
-    console.log('🔗 Stored pairings for reconnection recovery');
+    console.log('💬 Created chat room:', chatId);
+    console.log('📊 Active chats:', activeChats.size);
 
-    console.log('📢 Sending pairing notification to the two users only');
+    // Notify both users individually
     emitToUser(user1.userId, 'chat-paired', pairingData);
     emitToUser(user2.userId, 'chat-paired', pairingData);
 
-    console.log('✅ Pairing completed - Remaining in queue:', waitingUsers.length);
+    console.log('✅ Pairing complete; queue size now =', waitingUsers.length);
   }
 }
 
-console.log('🚀 Server initializing...');
+// Periodic background pairing check
+setInterval(() => {
+  if (waitingUsers.length >= 2) {
+    console.log('⏰ Interval pairing check; queue size =', waitingUsers.length);
+    tryPairUsers();
+  }
+}, 1000);
 
-// Root endpoint
+// ==============================
+// REST API
+// ==============================
+
 app.get('/', (req, res) => {
-  console.log('📍 Root endpoint accessed');
   res.json({ message: 'BlahBluh Backend API is running!' });
 });
 
-// Generate random user with name
 app.get('/api/generate-user', (req, res) => {
-  const randomUserId = uuidv4();
-  const randomUsername = generateRandomName();
-  console.log('🆔 Generated random user - ID:', randomUserId, 'Name:', randomUsername);
-  res.json({ userId: randomUserId, username: randomUsername });
+  const userId = uuidv4();
+  const username = generateRandomName();
+  users.set(userId, { userId, username });
+  console.log('🆔 Generated user:', userId, username);
+  res.json({ userId, username });
 });
 
-// Join queue for random chat (no login required)
+// Join queue
 app.post('/api/join-queue', (req, res) => {
-  console.log('🔄 Join queue request received:', req.body);
-
+  console.log('🔄 /api/join-queue body =', req.body);
   let { userId, username } = req.body;
 
-  // Generate random user if not provided
+  // Auto-generate if missing
   if (!userId || !username) {
     userId = uuidv4();
     username = generateRandomName();
-    console.log('🆔 Generated random user for queue - ID:', userId, 'Name:', username);
+    console.log('🆔 Auto-assigned user:', userId, username);
   }
 
-  // Check if user already has an active pairing
+  // Remember user info
+  if (!users.has(userId)) {
+    users.set(userId, { userId, username });
+  }
+
+  // If already in an active pairing, just return that
   if (activePairings.has(userId)) {
-    console.log('🔗 User already paired, not adding to queue:', userId);
-    return res.json({ message: 'Already paired', inQueue: false, userId, username });
+    console.log('ℹ️ User already paired, not re-queuing:', userId);
+    return res.json({
+      message: 'Already paired',
+      inQueue: false,
+      userId,
+      username,
+    });
   }
 
-  // Check if user already in queue
-  if (waitingUsers.find((u) => u.userId === userId)) {
-    console.log('⚠️ User already in queue:', userId);
-    return res.json({ message: 'Already in queue', inQueue: true, userId, username });
+  // If they are already in queue, do nothing
+  const alreadyInQueue = waitingUsers.some((u) => u.userId === userId);
+  if (!alreadyInQueue) {
+    waitingUsers.push({ userId, username, joinedAt: Date.now() });
   }
 
-  const user = { userId, username, joinedAt: Date.now() };
-  waitingUsers.push(user);
-  users.set(userId, user);
+  console.log('✅ Queue add; queue size =', waitingUsers.length);
 
-  console.log('✅ User added to queue:', userId, 'Username:', username);
-  console.log('📊 Current queue length:', waitingUsers.length);
-  console.log('👥 Users in queue:', waitingUsers.map((u) => `${u.username}(${u.userId})`));
-
-  // Try to pair immediately
+  // Immediately try pairing
   tryPairUsers();
+
+  const position = waitingUsers.findIndex((u) => u.userId === userId) + 1;
 
   res.json({
     message: 'Added to queue',
-    inQueue: true,
-    queuePosition: waitingUsers.findIndex((u) => u.userId === userId) + 1,
+    inQueue: position > 0,
+    queuePosition: position > 0 ? position : 0,
     userId,
     username,
   });
 });
 
-// Leave queue
+// Leave queue or active chat
 app.post('/api/leave-queue', (req, res) => {
   const { userId } = req.body;
-  console.log('🚪 Leave queue request for userId:', userId);
+  console.log('🚪 /api/leave-queue for', userId);
 
-  const beforeLength = waitingUsers.length;
+  // Remove from waiting queue
+  const before = waitingUsers.length;
   waitingUsers = waitingUsers.filter((u) => u.userId !== userId);
-  const afterLength = waitingUsers.length;
+  const after = waitingUsers.length;
+  console.log(`🧹 Removed from queue if present; before=${before} after=${after}`);
 
-  // Handle partner leaving if user was in active chat
+  // If user is currently in a pairing, clean up and requeue partner
   if (activePairings.has(userId)) {
     const pairingData = activePairings.get(userId);
-    const { chatId, users: pairedUsers } = pairingData;
+    const { chatId, users: paired } = pairingData;
 
-    console.log('👋 User leaving active chat - UserId:', userId, 'ChatId:', chatId);
+    console.log('👋 Leaving active chat:', chatId, 'by user', userId);
 
-    const leaverId = userId;
-    const partner = pairedUsers.find((u) => u.userId !== leaverId);
+    const partner = paired.find((u) => u.userId !== userId);
 
-    // Clean up pairing for both
-    pairedUsers.forEach((user) => activePairings.delete(user.userId));
+    // Remove mapping for both users
+    paired.forEach((u) => activePairings.delete(u.userId));
     activeChats.delete(chatId);
-    console.log('🗑️ Cleaned up chat room:', chatId);
 
-    // Requeue partner only
+    // Requeue partner if still known
     if (partner && users.has(partner.userId)) {
       const partnerData = users.get(partner.userId);
-
-      const alreadyInQueue = waitingUsers.some((u) => u.userId === partner.userId);
-      if (!alreadyInQueue) {
-        waitingUsers.push(partnerData);
-        console.log('🔄 Added partner back to queue:', partner.username, '(', partner.userId, ')');
+      const partnerAlreadyQueued = waitingUsers.some(
+        (u) => u.userId === partner.userId
+      );
+      if (!partnerAlreadyQueued) {
+        waitingUsers.push({ ...partnerData, joinedAt: Date.now() });
+        console.log('🔁 Requeued partner:', partner.userId);
       }
-
-      // Notify partner only
       emitToUser(partner.userId, 'partner-left', { chatId });
     }
 
-    // Try to pair them with someone else
+    // Try to pair again
     tryPairUsers();
   }
 
-  console.log('📊 Queue length before:', beforeLength, 'after:', afterLength);
   res.json({ message: 'Left queue', inQueue: false });
 });
 
-// Get queue status
+// Queue status
 app.get('/api/queue-status/:userId', (req, res) => {
   const { userId } = req.params;
-  console.log('📊 Queue status request for userId:', userId);
-
-  const inQueue = waitingUsers.some((u) => u.userId === userId);
   const position = waitingUsers.findIndex((u) => u.userId === userId) + 1;
-
-  console.log('📍 User in queue:', inQueue, 'Position:', position);
-
   res.json({
-    inQueue,
-    queuePosition: position || 0,
+    inQueue: position > 0,
+    queuePosition: position > 0 ? position : 0,
     totalInQueue: waitingUsers.length,
   });
 });
 
-// Socket.IO for real-time chat
-io.on('connection', (socket) => {
-  console.log('🔌 User connected with socket ID:', socket.id);
+// ==============================
+// Socket.IO handlers
+// ==============================
 
-  socket.on('register-user', (data) => {
-    const { userId } = data;
-    console.log('📝 User registered with socket - UserId:', userId, 'SocketId:', socket.id);
+io.on('connection', (socket) => {
+  console.log('🔌 Socket connected:', socket.id);
+
+  // Step 1: register which user this socket belongs to
+  socket.on('register-user', ({ userId }) => {
+    if (!userId) return;
     socket.userId = userId;
 
     if (!userSockets.has(userId)) {
       userSockets.set(userId, new Set());
     }
     userSockets.get(userId).add(socket.id);
-    console.log('📊 User socket count:', userSockets.get(userId).size);
 
-    // If this user was already paired while they were disconnected, resend pairing
+    console.log('📝 Registered socket for user', userId, '->', socket.id);
+
+    // If user was already paired before connection, resend pairing info
     if (activePairings.has(userId)) {
       const pairingData = activePairings.get(userId);
-      console.log('🔄 Resending pairing event to reconnected user:', userId);
       socket.emit('chat-paired', pairingData);
     }
   });
 
-  socket.on('join-chat', (data) => {
-    const { userId, chatId } = data;
-    console.log('🏠 User joining chat - UserId:', userId, 'ChatId:', chatId);
-
+  // Step 2: join a chat room by chatId
+  socket.on('join-chat', ({ userId, chatId }) => {
+    console.log('🏠 join-chat:', userId, chatId);
     socket.join(chatId);
     socket.userId = userId;
     socket.chatId = chatId;
-
-    // Make sure this socket is tracked as well (in case join-chat is the first event)
-    if (!userSockets.has(userId)) {
-      userSockets.set(userId, new Set());
-    }
-    userSockets.get(userId).add(socket.id);
-    console.log('📊 User socket count after join-chat:', userSockets.get(userId).size);
-
-    console.log('✅ User successfully joined chat room:', chatId);
   });
 
-  socket.on('send-message', (data) => {
-    const { chatId, message, userId, username } = data;
-    console.log('💬 Message received - From:', username, 'UserId:', userId, 'ChatId:', chatId);
-    console.log('📝 Message content:', message);
+  // Step 3: sending a message
+  socket.on('send-message', ({ chatId, message, userId, username }) => {
+    if (!chatId || !message) return;
+    console.log('💬 Message from', userId, 'in chat', chatId, ':', message);
 
-    const messageData = {
+    const payload = {
       id: uuidv4(),
       message,
       userId,
@@ -334,90 +327,68 @@ io.on('connection', (socket) => {
       timestamp: Date.now(),
     };
 
-    console.log('📤 Broadcasting message to chat:', chatId);
-    io.to(chatId).emit('new-message', messageData);
+    io.to(chatId).emit('new-message', payload);
   });
 
+  // Handle disconnects
   socket.on('disconnect', () => {
-    console.log('🔌 User disconnected - Socket ID:', socket.id);
+    console.log('🔌 Socket disconnected:', socket.id);
+    const userId = socket.userId;
+    if (!userId) return;
 
-    if (!socket.userId) {
+    const set = userSockets.get(userId);
+    if (set) {
+      set.delete(socket.id);
+      if (set.size === 0) {
+        userSockets.delete(userId);
+      }
+    }
+
+    if (!isUserOffline(userId)) {
+      console.log('ℹ️ User still has other sockets open:', userId);
       return;
     }
 
-    const userId = socket.userId;
+    console.log('🚪 User fully offline:', userId);
 
-    if (userSockets.has(userId)) {
-      userSockets.get(userId).delete(socket.id);
-      console.log('📊 Remaining sockets for user:', userSockets.get(userId).size);
+    // If user is in active pairing, treat as a leave and requeue partner
+    if (activePairings.has(userId)) {
+      const pairingData = activePairings.get(userId);
+      const { chatId, users: paired } = pairingData;
 
-      if (isUserOffline(userId)) {
-        console.log('🚪 User fully offline - UserId:', userId);
+      console.log('👋 Fully offline paired user:', userId, 'from chat', chatId);
 
-        if (!activePairings.has(userId)) {
-          // 🔧 Do NOT auto-remove from queue here.
-          // They might reconnect in a moment; offline users
-          // will be cleaned by tryPairUsers() before pairing.
-          console.log(
-            'ℹ️ Unpaired user went fully offline; keeping them in queue for now.'
-          );
-        } else {
-          // User was paired - requeue ONLY the partner
-          const pairingData = activePairings.get(userId);
-          const { chatId, users: pairedUsers } = pairingData;
+      const partner = paired.find((u) => u.userId !== userId);
 
-          console.log('👋 Paired user fully offline - UserId:', userId, 'ChatId:', chatId);
+      paired.forEach((u) => activePairings.delete(u.userId));
+      activeChats.delete(chatId);
 
-          const leaverId = userId;
-          const partner = pairedUsers.find((u) => u.userId !== leaverId);
-
-          // Clean up pairing for both
-          pairedUsers.forEach((u) => activePairings.delete(u.userId));
-          activeChats.delete(chatId);
-          console.log('🗑️ Cleaned up chat room:', chatId);
-
-          // Requeue partner only
-          if (partner && users.has(partner.userId)) {
-            const partnerData = users.get(partner.userId);
-
-            const alreadyInQueue = waitingUsers.some(
-              (u) => u.userId === partner.userId
-            );
-            if (!alreadyInQueue) {
-              waitingUsers.push(partnerData);
-              console.log(
-                '🔄 Added partner back to queue:',
-                partner.username,
-                '(',
-                partner.userId,
-                ')'
-              );
-            }
-
-            // Notify partner only
-            emitToUser(partner.userId, 'partner-left', { chatId });
-          }
-
-          // Try to pair them with someone else
-          tryPairUsers();
+      if (partner && users.has(partner.userId)) {
+        const partnerData = users.get(partner.userId);
+        const partnerAlreadyQueued = waitingUsers.some(
+          (u) => u.userId === partner.userId
+        );
+        if (!partnerAlreadyQueued) {
+          waitingUsers.push({ ...partnerData, joinedAt: Date.now() });
+          console.log('🔁 Requeued partner on disconnect:', partner.userId);
         }
+        emitToUser(partner.userId, 'partner-left', { chatId });
+      }
 
-        // Clean up user socket tracking completely
-        userSockets.delete(userId);
-      } else {
-        console.log('🔄 User still has other active sockets, not treating as offline.');
+      tryPairUsers();
+    } else {
+      // If user was only waiting, remove them from queue
+      const before = waitingUsers.length;
+      waitingUsers = waitingUsers.filter((u) => u.userId !== userId);
+      const after = waitingUsers.length;
+      if (before !== after) {
+        console.log(
+          `🧹 Removed offline waiting user from queue: before=${before} after=${after}`
+        );
       }
     }
   });
 });
-
-// Continuous pairing check - runs every 1 second
-setInterval(() => {
-  if (waitingUsers.length >= 2) {
-    console.log('🔍 Continuous pairing check - Current queue:', waitingUsers.length);
-    tryPairUsers();
-  }
-}, 1000);
 
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
